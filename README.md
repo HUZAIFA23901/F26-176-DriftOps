@@ -153,7 +153,7 @@ pytest -v
 - [x] **Step 2:** Target PostgreSQL warehouse simulator and dbt-core testbed (`docker-compose.yml`, `testbed/`).
 - [x] **Step 3:** AST Parsing Engine, Structural Confidence Calculator ($C_{\text{AST}}$), and AST Rule Validator (`src/compiler/`).
 - [x] **Step 4:** Ephemeral Docker sandbox lifecycle and verification harness (`src/sandbox/`).
-- [ ] **Step 5:** Schema drift detector & candidate repair synthesizer (`src/detector/`).
-- [ ] **Step 6:** Deterministic risk gating algorithms and threshold enforcement (`src/gate/`).
+- [x] **Step 5:** Deterministic risk gating algorithms and threshold enforcement (`src/gate/`).
+- [ ] **Step 6:** Schema drift detector & candidate repair synthesizer (`src/detector/`).
 - [ ] **Step 7:** FastAPI orchestrator, GitHub PR bot, and CI/CD webhooks (`src/orchestrator/`).
 - [ ] **Step 8:** Operations telemetry dashboard in Streamlit (`src/dashboard/`).
