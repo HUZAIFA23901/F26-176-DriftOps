@@ -5,3 +5,9 @@ Responsible for:
 - Coordinating detection -> patch synthesis -> sandbox execution -> risk gate evaluation
 - GitHub integration (check runs, commit statuses, inline PR review suggestions)
 """
+
+from src.orchestrator.runner import run_drift_repair_pipeline
+
+__all__ = [
+    "run_drift_repair_pipeline",
+]

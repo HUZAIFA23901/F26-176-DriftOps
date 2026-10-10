@@ -124,6 +124,14 @@ copy .env.example .env
 Confirm the environment and configuration module pass all verification tests:
 ```bash
 pytest -v
+# or via CLI runner:
+python main.py --run-tests
+```
+
+### Step 6: Run Live DriftOps Demonstrator
+Execute the live end-to-end Column Rename (`customer_phone` -> `contact_number`) repair gate:
+```bash
+python main.py --demo-class1
 ```
 
 ---
@@ -147,13 +155,13 @@ pytest -v
 
 ---
 
-## 5. Development Roadmap
+## 5. Development Roadmap (Mid-1 Evaluation Milestone)
 
 - [x] **Step 1:** Foundation setup, Pydantic settings, environment scaffolding, and directory layout.
 - [x] **Step 2:** Target PostgreSQL warehouse simulator and dbt-core testbed (`docker-compose.yml`, `testbed/`).
 - [x] **Step 3:** AST Parsing Engine, Structural Confidence Calculator ($C_{\text{AST}}$), and AST Rule Validator (`src/compiler/`).
 - [x] **Step 4:** Ephemeral Docker sandbox lifecycle and verification harness (`src/sandbox/`).
 - [x] **Step 5:** Deterministic risk gating algorithms and threshold enforcement (`src/gate/`).
-- [ ] **Step 6:** Schema drift detector & candidate repair synthesizer (`src/detector/`).
-- [ ] **Step 7:** FastAPI orchestrator, GitHub PR bot, and CI/CD webhooks (`src/orchestrator/`).
+- [x] **Step 6:** End-to-end pipeline orchestrator (`src/orchestrator/`), CLI demonstrator (`main.py`), and E2E verification (`tests/test_e2e.py`).
+- [ ] **Step 7:** FastAPI CI/CD webhook orchestrator & GitHub PR integration (`src/orchestrator/`).
 - [ ] **Step 8:** Operations telemetry dashboard in Streamlit (`src/dashboard/`).
