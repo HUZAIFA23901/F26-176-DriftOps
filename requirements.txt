@@ -1,0 +1,36 @@
+# DriftOps - Inline Repair and Verification Gate for dbt-core Pipelines
+# Core Requirements for Python 3.10 / 3.11
+
+# SQL Parsing & AST Analysis
+sqlglot>=20.0.0
+
+# dbt Engine & Target Adapter
+dbt-core>=1.7.0
+dbt-postgres>=1.7.0
+
+# Fast API Backend & ASGI Server
+fastapi>=0.109.0
+uvicorn>=0.27.0
+
+# Ephemeral Docker Sandbox Runner
+docker>=7.0.0
+
+# GitHub Integration (PR Status Checks & Inline Comments)
+PyGithub>=2.1.1
+
+# Observability & Ops Dashboard
+streamlit>=1.31.0
+
+# PostgreSQL Driver
+psycopg2-binary>=2.9.9
+
+# Testing & Verification Framework
+pytest>=8.0.0
+
+# Similarity Scoring & Fuzzy Matching (Column/Identifier Mapping)
+jaro-winkler>=2.0.0
+
+# Config, Settings & Schema Validation
+pydantic>=2.6.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0

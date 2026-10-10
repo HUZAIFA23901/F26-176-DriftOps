@@ -1,0 +1,24 @@
+name: 'jaffle_shop_driftops'
+version: '1.0.0'
+config-version: 2
+
+# Profile connecting to PostgreSQL warehouse
+profile: 'driftops_profile'
+
+# Directory paths
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Default configurations for models
+models:
+  jaffle_shop_driftops:
+    +materialized: view

@@ -1,0 +1,12 @@
+driftops_profile:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST', 'localhost') }}"
+      port: "{{ env_var('POSTGRES_PORT', '5432') | as_number }}"
+      user: "{{ env_var('POSTGRES_USER', 'postgres') }}"
+      pass: "{{ env_var('POSTGRES_PASSWORD', 'postgres') }}"
+      dbname: "{{ env_var('POSTGRES_DB', 'driftops_db') }}"
+      schema: analytics
+      threads: 4
