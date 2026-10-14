@@ -1,0 +1,480 @@
+================================================================================
+DRIFTOPS (F26-176-DriftOps) - MID-1 TECHNICAL IMPLEMENTATION SUMMARY
+================================================================================
+Document Type    : Principal System Architecture & Mid-1 Evaluation Technical Reference
+Project ID       : F26-176-DriftOps
+Target Subsystem : dbt-core 1.7+ / PostgreSQL 15 / Docker Ephemeral Sandboxes / AST Engine
+Evaluation Scope : Mid-1 FYP Milestone - Failure Class 1 (Column Renames) PoC
+Timestamp        : 2026-10-14
+Status           : Fully Implemented, Unit-Tested, and Verified
+================================================================================
+
+
+1. PROJECT IDENTITY & OBJECTIVE
+--------------------------------------------------------------------------------
+1.1 Project Identity:
+    * Official Title : DriftOps (Inline Repair & Verification Gate for dbt-core Pipelines)
+    * Project ID     : F26-176-DriftOps
+    * Primary Stacks : Python 3.10 / 3.11, sqlglot, dbt-core / dbt-postgres,
+                       Docker Engine SDK, PostgreSQL 15, Pydantic v2 Settings, pytest.
+
+1.2 Core Problem Statement:
+    In enterprise data platforms and modern analytics stacks, upstream operational
+    databases frequently undergo schema modifications—such as column renames, type
+    widening/narrowing, additions, and deletions. When these operational migrations
+    occur without coordinated updates to downstream analytics repositories, dbt
+    compilation or execution jobs break catastrophically in production.
+    Traditional recovery relies on human alert triage, tedious SQL debugging, and
+    multi-hour manual pull request cycles.
+
+1.3 Core Engineering Objective:
+    DriftOps provides a deterministic, AST-based schema drift repair engine and
+    verification gate that:
+    1. Intercepts schema failure diagnostics and detects semantic drift.
+    2. Rewrites affected SQL queries via deterministic Abstract Syntax Tree (AST) transforms.
+    3. Spins up isolated, ephemeral PostgreSQL Docker sandbox containers in sub-second cycles.
+    4. Executes dbt test suites against candidate patches in the isolated sandbox.
+    5. Computes multi-factor risk scores and structural safety gates.
+    6. Decides whether to autonomously merge (Tier 1), emit an assist PR (Tier 2),
+       or escalate to on-call engineers (Tier 3).
+
+1.4 Target Scope for Mid-1 Evaluation:
+    * Complete End-to-End Proof of Concept (PoC) for Failure Class 1: Column Renames
+      (e.g., `raw_customers.customer_phone` renamed to `contact_number`).
+    * Full integration of the 6-Step repair lifecycle from AST synthesis to tier routing.
+    * Strict zero-tolerance hard safety gates (Zero failed dbt tests, C_AST >= 0.80, AST rules pass).
+    * Dual-mode operational support: Live Docker execution and deterministic mocked verification.
+
+
+2. SYSTEM ARCHITECTURE & REPAIR WORKFLOW (STEPS 1 - 6)
+--------------------------------------------------------------------------------
+DriftOps executes schema repair through six modular, decoupled subsystems:
+
++------------------------------------------------------------------------------+
+|                          DRIFTOPS REPAIR WORKFLOW                            |
++------------------------------------------------------------------------------+
+| [Step 1: Scaffolding] -> Strongly typed Pydantic configs & environment loading|
+|           |                                                                  |
+| [Step 2: Warehouse]   -> PostgreSQL 15 container & Jaffle Shop dbt testbed    |
+|           |                                                                  |
+| [Step 3: Compiler]    -> sqlglot AST parsing, rewrite, C_AST & safety rules  |
+|           |                                                                  |
+| [Step 4: Sandbox]     -> Dynamic ephemeral container, view deployment & tests |
+|           |                                                                  |
+| [Step 5: Safety Gate] -> Hard gates check, DAG blast radius & Tier routing   |
+|           |                                                                  |
+| [Step 6: Orchestrator]-> Unified runner & visual ANSI-coded CLI demonstrator  |
++------------------------------------------------------------------------------+
+
+--- Step 1: Scaffolding & Configuration Management ---
+* Module: `src/config.py`
+* Role: Implements `Settings(BaseSettings)` using `pydantic-settings` to guarantee
+  strongly-typed, validated runtime environment variables.
+* Enforces validation logic:
+  - Port numbers clamped between 1 and 65535.
+  - Logging levels validated against canonical sets (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+  - Risk thresholds validated such that `TIER_2_MAX_RISK >= TIER_1_MAX_RISK`.
+  - Cached via `@lru_cache` to provide a thread-safe singleton `get_settings()`.
+
+--- Step 2: Warehouse Simulator & dbt Testbed ---
+* Files: `docker-compose.yml`, `testbed/init.sql`, `testbed/dbt_project.yml`, `testbed/profiles.yml`
+* Role: Establishes a reproducible warehouse environment mimicking an enterprise
+  production database and dbt-core model hierarchy.
+* Database: PostgreSQL 15 Alpine (`driftops_postgres`) configured with schemas `raw`
+  and `analytics`.
+* Testbed DAG Structure:
+  - Source Table: `raw.raw_customers` (seeded with 10 synthetic customer rows).
+  - Staging View: `analytics.stg_customers` (projects `id AS customer_id`, `customer_phone`, etc.).
+  - Downstream Mart: `analytics.customers` (materialized table referencing `stg_customers`).
+  - dbt Tests: Enforces constraints (`unique`, `not_null` on `customer_id` and `customer_phone`).
+
+--- Step 3: Compiler Engine (AST Parsing, C_AST, and Rules) ---
+* Modules: `src/compiler/ast_parser.py`, `src/compiler/cast_calculator.py`, `src/compiler/rules.py`
+* AST Parsing & Rewriting (`ast_parser.py`):
+  - Uses `sqlglot` to parse Postgres SQL queries into recursive expression trees.
+  - `extract_columns(sql_query)`: Traverses AST to extract unique column identifiers.
+  - `repair_column_rename(sql_query, old_col, new_col)`: Identifies occurrences of drifted
+    columns. In direct SELECT projections, it rewrites `new_col AS old_col` to preserve
+    downstream schema contracts. In WHERE clauses, JOIN conditions, or existing aliases,
+    it cleanly substitutes the column identifier.
+* Structural Confidence Score (`cast_calculator.py`):
+  - Computes composite confidence `C_AST = 0.4 * S_name + 0.4 * T_compat + 0.2 * I_catalog`.
+  - `S_name`: Normalized Jaro-Winkler string similarity in [0.0, 1.0].
+  - `T_compat`: Evaluates PostgreSQL type compatibility: 1.0 for identical/lossless widening,
+    0.5 for explicit coercions (e.g., VARCHAR <-> BIGINT), 0.0 for incompatible types.
+  - `I_catalog`: Catalog ordinal invariant check (1.0 if column position matches, 0.0 otherwise).
+* Deterministic Rule Validator (`rules.py`):
+  - Inspects unpatched vs patched AST trees to prevent hallucinated changes.
+  - Rule 1: No new JOIN clauses introduced (`len(patch_joins) <= len(orig_joins)`).
+  - Rule 2: No WHERE clause filters injected or altered (`normalize_predicate(orig) == normalize_predicate(patch)`).
+  - Rule 3: No new literals, unexpected tables, or mutated GROUP/ORDER/LIMIT clauses.
+  - Rule 4: Projection alterations restricted strictly to renamed column aliases or explicit casts.
+
+--- Step 4: Ephemeral Docker Sandbox & Test Harness ---
+* Modules: `src/sandbox/container_manager.py`, `src/sandbox/dbt_runner.py`
+* Sandbox Lifecycle (`container_manager.py`):
+  - Interacts with Docker daemon via Python Docker SDK (`docker.from_env()`).
+  - `get_free_port()`: Binds to port 0 on host to allocate an unused ephemeral port.
+  - `SandboxContainer.start()`: Boots `postgres:15-alpine` container on dynamic port,
+    polling via `psycopg2` readiness probe until database is accepting queries.
+  - `seed_schema_and_patch()`: Executes `testbed/init.sql`, creates schemas, drops existing
+    views, and deploys the candidate SQL patch as a view in `analytics`.
+  - Context Manager (`__enter__`, `__exit__`): Guarantees immediate `stop(timeout=2)` and
+    `remove(v=True, force=True)` to prevent orphan containers or memory leaks.
+* dbt Test Runner (`dbt_runner.py`):
+  - Launches `python -m dbt.cli.main test` targeting the ephemeral container credentials.
+  - Captures execution logs and parses `target/run_results.json` (with fallback to CLI log regex).
+  - Computes empirical test failure ratio: `F_tests = failed_tests / total_tests`.
+
+--- Step 5: Risk Gates & Tier Decision Engine ---
+* Modules: `src/gate/hard_gates.py`, `src/gate/risk_calculator.py`, `src/gate/decision_engine.py`
+* Hard Safety Gates (`hard_gates.py`):
+  - Zero-tolerance invariants:
+    1. `F_tests == 0.0` (all dbt assertions must pass in the shadow sandbox).
+    2. `C_AST >= 0.80` (structural confidence must equal or exceed 80% floor).
+    3. `ast_rule_valid == True` (no unauthorized syntactic alterations).
+  - If ANY condition fails, the candidate patch is immediately blocked and routed to Tier 3.
+* Class Overrides (`hard_gates.py`):
+  - Prevents autonomous merging for high-consequence drift classes: `column_add`, `column_drop`,
+    `nullability_shift`, `type_narrowing`. Forces Tier 2 human review regardless of low risk scores.
+* Risk Calculation (`risk_calculator.py`):
+  - Computes DAG blast radius: `D_impact = min(1.0, N_downstream / 5.0)`.
+  - Calculates composite risk score: `R = 0.5 * D_impact + 0.5 * (1.0 - C_AST)`.
+* Decision Engine (`decision_engine.py`):
+  - Synthesizes all evaluations into `DecisionResult`:
+    * Tier 1 (Auto-Fix) : Hard Gates PASS AND R < 0.20 AND No Class Override.
+    * Tier 2 (Assist)   : Hard Gates PASS AND (0.20 <= R < 0.60 OR Class Override Active).
+    * Tier 3 (Fallback) : Hard Gates FAIL OR R >= 0.60.
+
+--- Step 6: Pipeline Orchestrator & CLI Demonstrator ---
+* Modules: `src/orchestrator/runner.py`, `main.py`
+* Pipeline Runner (`runner.py`):
+  - Implements `run_drift_repair_pipeline(...)`: connects all steps from broken SQL input
+    to final `DecisionResult` output.
+  - Accepts `mock_sandbox_result` parameter to support hermetic, lightning-fast unit tests
+    in CI environments without requiring a local Docker daemon.
+* Visual CLI (`main.py`):
+  - Exposes CLI interface with flags `--demo-class1` and `--run-tests`.
+  - Generates the standard DriftOps Visual Runlog with ANSI color-coding.
+
+
+3. FILE-BY-FILE MODULE DIRECTORY MAP
+--------------------------------------------------------------------------------
+Below is the definitive catalog of all repository files, detailing their location,
+primary functions, and technical roles:
+
+=== Root Directory ===
+* `main.py`:
+  - Purpose: Primary CLI entry point and visual demonstrator.
+  - Functions:
+    * `format_runlog(res: Dict[str, Any]) -> str`: Builds formatted ANSI runlog banner.
+    * `run_class_1_demo() -> int`: Executes live Column Rename repair on `stg_customers`.
+    * `run_pytest_suite() -> int`: Invokes pytest across all project test suites.
+    * `main() -> None`: Argument parser and command router.
+* `docker-compose.yml`:
+  - Purpose: Defines the local primary PostgreSQL 15 warehouse container (`driftops_postgres`)
+    mapping port 5432:5432 with healthchecks and auto-mounting `testbed/init.sql`.
+* `requirements.txt`:
+  - Purpose: Pins production and test dependencies: `sqlglot`, `dbt-core`, `dbt-postgres`,
+    `docker`, `psycopg2-binary`, `pydantic`, `pydantic-settings`, `pytest`, `jaro-winkler`.
+* `.env`:
+  - Purpose: Local environment configuration for PostgreSQL credentials and thresholds.
+* `.env.example`:
+  - Purpose: Version-controlled environment variable template detailing all configurable keys.
+* `.gitignore`:
+  - Purpose: Excludes `.env`, `venv/`, Python bytecode, dbt `target/`, and temp logs.
+* `README.md`:
+  - Purpose: Comprehensive system documentation, quickstart, and architectural diagrams.
+* `MID1_PROJECT_SUMMARY.txt`:
+  - Purpose: This technical reference document for Mid-1 FYP Evaluation.
+
+=== Configuration (`src/`) ===
+* `src/__init__.py`:
+  - Purpose: Package marker exposing package metadata (`__version__ = "0.1.0"`).
+* `src/config.py`:
+  - Purpose: Strongly-typed Pydantic configuration and threshold definitions.
+  - Classes:
+    * `Settings(BaseSettings)`: Validates connection parameters, Docker socket, risk thresholds
+      (`HARD_GATE_C_AST_FLOOR`, `TIER_1_MAX_RISK`, `TIER_2_MAX_RISK`), and properties (`postgres_uri`).
+  - Functions:
+    * `get_settings() -> Settings`: LRU-cached singleton settings accessor.
+
+=== Compiler Engine (`src/compiler/`) ===
+* `src/compiler/__init__.py`:
+  - Purpose: Exposes parser, calculator, and rule validator APIs.
+* `src/compiler/ast_parser.py`:
+  - Purpose: AST generation, column extraction, and dialect-specific SQL rewrite.
+  - Functions:
+    * `extract_columns(sql_query: str, dialect: str = "postgres") -> List[str]`:
+      Parses SQL into AST and returns distinct column identifiers.
+    * `repair_column_rename(sql_query: str, old_column: str, new_column: str, dialect: str) -> str`:
+      Walks AST and replaces `old_column` with `new_column AS old_column` in SELECT projections
+      or direct substitution in predicates and expressions.
+* `src/compiler/cast_calculator.py`:
+  - Purpose: Structural AST confidence metric ($C_{\text{AST}}$) engine.
+  - Dictionaries:
+    * `TYPE_ALIASES`: Maps Postgres data types to canonical identifiers.
+    * `LOSSLESS_CONVERSIONS`: Set of implicit safe widening conversions (e.g. INT -> BIGINT).
+    * `VALID_EXPLICIT_CASTS`: Set of allowed explicit casts (e.g. VARCHAR <-> BIGINT).
+  - Functions:
+    * `calculate_name_similarity(old_name: str, new_name: str) -> float`: Jaro-Winkler metric.
+    * `calculate_type_compatibility(source_type: str, target_type: str) -> float`: Evaluates type compatibility.
+    * `calculate_catalog_invariant(attnum_match: bool) -> float`: Evaluates column position invariant.
+    * `compute_c_ast(...) -> float`: Weighted calculation: `0.4*S_name + 0.4*T_compat + 0.2*I_catalog`.
+* `src/compiler/rules.py`:
+  - Purpose: Hard safety checks verifying AST invariant semantics between unpatched and patched queries.
+  - Functions:
+    * `_normalize_predicate(node) -> Optional[str]`: Normalizes WHERE clauses by stripping column names.
+    * `_is_valid_projection_modification(orig, patch) -> bool`: Ensures projections only alter renamed column.
+    * `validate_ast_rules(original_sql: str, patched_sql: str, dialect: str) -> bool`:
+      Verifies that no joins, where clauses, literals, tables, or extra projections were injected.
+
+=== Ephemeral Sandbox (`src/sandbox/`) ===
+* `src/sandbox/__init__.py`:
+  - Purpose: Exposes sandbox container and dbt execution APIs.
+* `src/sandbox/container_manager.py`:
+  - Purpose: Docker container lifecycle manager for isolated shadow verification.
+  - Functions:
+    * `get_free_port() -> int`: Identifies an open host ephemeral port.
+  - Classes:
+    * `SandboxContainer`:
+      - `__init__(image_name, db_name, user, password)`: Configures container parameters.
+      - `start(timeout_seconds) -> Dict[str, Any]`: Starts container and polls TCP connection.
+      - `seed_schema_and_patch(init_sql_path, patched_sql, model_name)`: Seeds raw tables & deploys view.
+      - `stop_and_cleanup()`: Forcibly terminates and deletes shadow container and volumes.
+      - `__enter__()` / `__exit__()`: Context manager methods for automated teardown.
+* `src/sandbox/dbt_runner.py`:
+  - Purpose: Invokes dbt-core CLI inside target environments and parses test outputs.
+  - Functions:
+    * `parse_dbt_run_results(run_results_data, log_lines) -> Dict[str, Any]`:
+      Extracts total, passed, failed counts and computes `F_tests = failed / total`.
+    * `run_dbt_tests(target_config, project_dir, select) -> Dict[str, Any]`:
+      Executes `python -m dbt.cli.main test` against ephemeral DB and returns structured metrics.
+
+=== Risk & Safety Gate Engine (`src/gate/`) ===
+* `src/gate/__init__.py`:
+  - Purpose: Exposes gate, risk calculator, and decision engine interfaces.
+* `src/gate/hard_gates.py`:
+  - Purpose: Enforces zero-tolerance invariant safety preconditions.
+  - Constants:
+    * `MANDATORY_OVERRIDE_CLASSES`: High-consequence drift classes requiring human review.
+  - Functions:
+    * `evaluate_hard_gates(f_tests, c_ast, ast_rule_valid, c_ast_floor) -> Tuple[bool, List[str]]`:
+      Validates `F_tests == 0.0`, `C_AST >= 0.80`, and `ast_rule_valid == True`.
+    * `check_class_override(failure_class: str) -> bool`: Checks if drift class requires Tier 2 override.
+* `src/gate/risk_calculator.py`:
+  - Purpose: Calculates DAG blast radius and composite risk score.
+  - Functions:
+    * `calculate_d_impact(n_downstream: int) -> float`: Saturated formula: `min(1.0, n_downstream / 5.0)`.
+    * `calculate_risk_score(d_impact: float, c_ast: float) -> float`:
+      Calculates `R = 0.5 * D_impact + 0.5 * (1.0 - C_AST)`.
+* `src/gate/decision_engine.py`:
+  - Purpose: Synthesizes gate results, blast radius, and risk scores into execution tiers.
+  - Classes:
+    * `ExecutionTier(str, Enum)`: Enums `TIER_1_AUTO_FIX`, `TIER_2_ASSIST`, `TIER_3_FALLBACK`.
+    * `DecisionResult`: Dataclass encapsulating assigned tier, scores, statuses, and reasons.
+  - Functions:
+    * `evaluate_patch_tier(...) -> DecisionResult`: Implements the multi-tiered decision matrix.
+
+=== Pipeline Orchestrator (`src/orchestrator/`) ===
+* `src/orchestrator/__init__.py`:
+  - Purpose: Package marker.
+* `src/orchestrator/runner.py`:
+  - Purpose: Master workflow controller binding Steps 1 to 6.
+  - Functions:
+    * `run_drift_repair_pipeline(...) -> Dict[str, Any]`: Executes AST repair, computes C_AST,
+      validates rules, executes sandbox testing, evaluates gates, and returns complete runlog dictionary.
+
+=== Database & dbt Testbed (`testbed/`) ===
+* `testbed/init.sql`:
+  - Purpose: PostgreSQL warehouse bootstrap script. Creates `raw` and `analytics` schemas,
+    initializes `raw.raw_customers`, and seeds 10 realistic customer records.
+* `testbed/dbt_project.yml`:
+  - Purpose: dbt-core configuration configuring project `jaffle_shop_driftops` and profile `driftops_profile`.
+* `testbed/profiles.yml`:
+  - Purpose: Connection profile referencing environment variables (`POSTGRES_HOST`, `POSTGRES_PORT`, etc.).
+* `testbed/models/stg_customers.sql`:
+  - Purpose: Staging view model selecting columns from `raw.raw_customers`.
+* `testbed/models/customers.sql`:
+  - Purpose: Downstream dimensional mart table referencing `stg_customers` via `{{ ref('stg_customers') }}`.
+* `testbed/models/schema.yml`:
+  - Purpose: dbt test contract defining `unique` and `not_null` assertions on customer models.
+
+=== Test Suites (`tests/`) ===
+* `tests/__init__.py`:
+  - Purpose: Test package marker.
+* `tests/test_config.py`:
+  - Purpose: Validates Pydantic settings defaults, validations, and singleton caching.
+* `tests/test_ast_parser.py`:
+  - Purpose: Tests AST column extraction, renaming transforms, C_AST scoring, and AST rule enforcement.
+* `tests/test_sandbox.py`:
+  - Purpose: Tests dbt log parsing, Docker container spin-up, schema seeding, and live dbt test execution.
+* `tests/test_gate.py`:
+  - Purpose: Tests hard gate evaluations, class overrides, risk formulas, and decision tier routing.
+* `tests/test_e2e.py`:
+  - Purpose: End-to-end integration tests verifying valid repairs route to Tier 1, illegal queries
+    and failing tests escalate to Tier 3, class overrides route to Tier 2, and runlog formatting.
+
+
+4. MATHEMATICAL FORMULAS & DECISION INVARIANTS
+--------------------------------------------------------------------------------
+DriftOps replaces heuristic guessing with deterministic, mathematical decision models:
+
+4.1 Structural Confidence Metric (C_AST):
+    C_AST = (alpha * S_name) + (beta * T_compat) + (gamma * I_catalog)
+    Where:
+    - alpha = 0.4  (Weight for name similarity)
+    - beta  = 0.4  (Weight for type compatibility)
+    - gamma = 0.2  (Weight for catalog ordinal invariant)
+    - S_name    in [0.0, 1.0]: Jaro-Winkler string similarity between old and new column names.
+    - T_compat  in {0.0, 0.5, 1.0}:
+        * 1.0 : Identical types or lossless widening (e.g., INT -> BIGINT, VARCHAR -> TEXT).
+        * 0.5 : Valid explicit casts (e.g., VARCHAR -> BIGINT).
+        * 0.0 : Incompatible types (e.g., BYTEA -> TIMESTAMP).
+    - I_catalog in {0.0, 1.0}: 1.0 if PostgreSQL attribute ordinal position matches, 0.0 otherwise.
+
+4.2 Empirical Test Failure Ratio (F_tests):
+    F_tests = (Failed dbt Assertions in Shadow DB) / (Total Executed dbt Assertions)
+    Clamped strictly in [0.0, 1.0]. If total tests == 0, F_tests = 0.0.
+
+4.3 DAG Blast-Radius Impact (D_impact):
+    D_impact = min(1.0, max(0.0, N_downstream / 5.0))
+    Where N_downstream is the number of direct and transitive downstream dbt models.
+    Impact saturates at 1.0 for N_downstream >= 5 models.
+
+4.4 Composite Deployment Risk Score (R):
+    R = 0.5 * D_impact + 0.5 * (1.0 - C_AST)
+    Balances structural uncertainty (1.0 - C_AST) equally against pipeline blast radius (D_impact).
+
+4.5 Hard Safety Gate Preconditions:
+    The candidate patch FAILS the hard safety gate if ANY of the following occur:
+    - F_tests > 0.0                 (Any test assertion fails in the sandbox)
+    - C_AST < HARD_GATE_C_AST_FLOOR (C_AST < 0.80)
+    - AST_Rule_Validation == False  (Injected JOINs, modified WHERE clauses, or extra columns)
+
+4.6 Decision Tier Routing Logic:
+    +-------------------------------------------------------------------------+
+    | Tier 1: Autonomous Auto-Fix                                             |
+    | Condition: Hard Gates PASS  AND  R < 0.20  AND  Class Override == False |
+    | Action   : Automatically committed and merged to staging branch.         |
+    +-------------------------------------------------------------------------+
+    | Tier 2: Bounded PR Assist (Human-in-the-Loop)                           |
+    | Condition: Hard Gates PASS  AND  (0.20 <= R < 0.60 OR Class Override)   |
+    | Action   : Emits suggested patch PR with verified diffs for review.     |
+    +-------------------------------------------------------------------------+
+    | Tier 3: Hard Block & Manual Fallback                                    |
+    | Condition: Hard Gates FAIL  OR  R >= 0.60                               |
+    | Action   : Halts pipeline, rejects patch, alerts on-call data engineer. |
+    +-------------------------------------------------------------------------+
+
+
+5. VERIFICATION & UNIT TEST SUITE MATRIX
+--------------------------------------------------------------------------------
+The DriftOps testbed is covered by comprehensive unit, integration, and mock suites:
+
+Test Module              | Primary Coverage Target                       | Key Scenarios Verified
+-------------------------+-----------------------------------------------+--------------------------------------
+tests/test_config.py     | src/config.py                                 | * Default configuration values
+                         |                                               | * Postgres URI string builder
+                         |                                               | * Log level enum validation
+                         |                                               | * Tier threshold order (T2 >= T1)
+                         |                                               | * Boundary validation (0.0 - 1.0)
+                         |                                               | * Singleton caching mechanism
+-------------------------+-----------------------------------------------+--------------------------------------
+tests/test_ast_parser.py | src/compiler/ast_parser.py                    | * Unique column extraction from SQL
+                         | src/compiler/cast_calculator.py               | * Complex projection column aliasing
+                         | src/compiler/rules.py                         | * Rewriting columns in WHERE clauses
+                         |                                               | * Jaro-Winkler string distance
+                         |                                               | * Type compatibility matrix evaluation
+                         |                                               | * Exact C_AST formula verification
+                         |                                               | * Rejection of injected JOIN clauses
+                         |                                               | * Rejection of modified WHERE filters
+                         |                                               | * Rejection of injected literals/cols
+-------------------------+-----------------------------------------------+--------------------------------------
+tests/test_sandbox.py    | src/sandbox/container_manager.py              | * dbt run_results.json parser
+                         | src/sandbox/dbt_runner.py                     | * Fallback CLI stdout/stderr parser
+                         |                                               | * Dynamic host port allocation
+                         |                                               | * Container spin-up and healthcheck
+                         |                                               | * Schema bootstrap and view deployment
+                         |                                               | * Automated container cleanup/teardown
+                         |                                               | * Live dbt test pass (F_tests=0.0)
+                         |                                               | * Live dbt test failure (F_tests>0)
+-------------------------+-----------------------------------------------+--------------------------------------
+tests/test_gate.py       | src/gate/hard_gates.py                        | * Hard gates pass condition
+                         | src/gate/risk_calculator.py                   | * Hard gates rejection on F_tests > 0
+                         | src/gate/decision_engine.py                   | * Hard gates rejection on C_AST < 0.8
+                         |                                               | * Rejection on AST safety violations
+                         |                                               | * Mandatory class override triggers
+                         |                                               | * D_impact saturation at N >= 5
+                         |                                               | * Risk score formula correctness
+                         |                                               | * Tier 1 Auto-Fix routing
+                         |                                               | * Tier 2 routing via risk & override
+                         |                                               | * Tier 3 Fallback on violations
+-------------------------+-----------------------------------------------+--------------------------------------
+tests/test_e2e.py        | src/orchestrator/runner.py                    | * End-to-end Column Rename to Tier 1
+                         | main.py                                       | * AST injection escalation to Tier 3
+                         |                                               | * dbt test failure escalation to Tier 3
+                         |                                               | * Column drop class override to Tier 2
+                         |                                               | * ANSI visual runlog verification
+-------------------------+-----------------------------------------------+--------------------------------------
+
+
+6. MID-1 DEMONSTRATION & COMMAND REFERENCE
+--------------------------------------------------------------------------------
+To reproduce and demonstrate all Mid-1 capabilities for evaluation:
+
+6.1 Environment Preparation:
+    # 1. Activate Python virtual environment
+    .\venv\Scripts\Activate.ps1       # Windows PowerShell
+    # or: source venv/bin/activate    # Linux / macOS
+
+    # 2. Verify dependencies are installed
+    pip install -r requirements.txt
+
+6.2 Warehouse Management (Docker Compose):
+    # Start the primary PostgreSQL warehouse
+    docker compose up -d
+
+    # Inspect running warehouse container
+    docker compose ps
+
+    # Verify warehouse initialization logs
+    docker compose logs postgres_warehouse
+
+    # Stop warehouse container
+    docker compose down
+
+6.3 Execute Automated Test Suite:
+    # Run full verification suite across all modules with verbose output
+    pytest -v
+
+    # Run only AST compiler and safety gate unit tests (Fast, no Docker required)
+    pytest tests/test_config.py tests/test_ast_parser.py tests/test_gate.py -v
+
+    # Run integration and end-to-end pipeline tests
+    pytest tests/test_sandbox.py tests/test_e2e.py -v
+
+6.4 Execute Live Mid-1 CLI Demonstrator:
+    # Run the interactive Failure Class 1 (Column Rename) repair demonstration
+    python main.py --demo-class1
+
+    # Alternative: Run all tests via main.py CLI
+    python main.py --run-tests
+
+6.5 Sample Visual Output Format:
+    ===============================================================
+                       DRIFTOPS ENGINE RUNLOG                       
+    ===============================================================
+    [1] DRIFT DETECTED     : Column Rename ('customer_phone' -> 'contact_number')
+    [2] AST PATCH GENERATED: SELECT id AS customer_id, contact_number AS customer_phone, email, created_at FROM raw.raw_customers
+    [3] C_AST SCORE        : 0.92 (S_name=0.80, T_compat=1.00, I_catalog=1.00)
+    [4] AST RULES VALID    : PASS
+    [5] SANDBOX EXECUTION  : Port 5433 | Tests Total: 4 | Passed: 4 | F_tests: 0.00
+    [6] HARD SAFETY GATES  : ALL PASSED
+    [7] RISK SCORE (R)     : 0.14 (D_impact=0.20, 1-C_AST=0.08)
+    [8] SYSTEM DECISION    : TIER 1 (AUTO-FIX) -> Auto-Merged to Staging Branch
+    ===============================================================
+
+================================================================================
+END OF DRIFTOPS MID-1 TECHNICAL IMPLEMENTATION SUMMARY
+================================================================================
