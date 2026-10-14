@@ -1,7 +1,10 @@
 # DriftOps: Inline Repair & Verification Gate for dbt-core Pipelines
 
+[![DriftOps CI Pipeline](https://github.com/HUZAIFA23901/F26-176-DriftOps/actions/workflows/ci.yml/badge.svg)](https://github.com/HUZAIFA23901/F26-176-DriftOps/actions/workflows/ci.yml)
+
 **Project ID:** `F26-176-DriftOps`  
 **Target Environment:** Python 3.10 / 3.11 | dbt-core 1.7+ | PostgreSQL | Docker
+
 
 ---
 
@@ -165,3 +168,28 @@ python main.py --demo-class1
 - [x] **Step 6:** End-to-end pipeline orchestrator (`src/orchestrator/`), CLI demonstrator (`main.py`), and E2E verification (`tests/test_e2e.py`).
 - [ ] **Step 7:** FastAPI CI/CD webhook orchestrator & GitHub PR integration (`src/orchestrator/`).
 - [ ] **Step 8:** Operations telemetry dashboard in Streamlit (`src/dashboard/`).
+
+---
+
+## 6. Continuous Integration & Quality Assurance
+
+DriftOps utilizes an automated GitHub Actions CI pipeline executing across Python 3.10 and 3.11 runtimes:
+- Multi-version matrix testing on `ubuntu-latest`.
+- Compile-time syntax validation (`compileall`) across all source and test modules.
+- Full unit and integration verification via `pytest`.
+- Automated smoke testing of the end-to-end CLI orchestrator (`python main.py --demo-class1`).
+
+For in-depth architecture details and local testing instructions, refer to the [CI/CD Pipeline Guide](docs/CI_CD_PIPELINE.md).
+
+---
+
+## 7. Project Contributors
+
+| Name | Role / Area | GitHub / Email |
+| :--- | :--- | :--- |
+| **Huzaifa** | Core Pipeline Orchestrator, Decision Engine, Risk Gates | [@HUZAIFA23901](https://github.com/HUZAIFA23901) |
+| **Zeeshan Sajid** | AST Parser, SQLGlot Transforms, End-to-End CLI | [@zeeshansajid361](https://github.com/zeeshansajid361) |
+| **Adnan** | CI/CD Automation Pipeline, Multi-Version Testing Matrix & Project Documentation | [adnanfreelancer75500@gmail.com](mailto:adnanfreelancer75500@gmail.com) |
+
+Detailed contributor breakdown and milestone records are maintained in [CONTRIBUTORS.md](CONTRIBUTORS.md).
+
