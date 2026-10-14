@@ -7,7 +7,7 @@ Responsible for:
 """
 
 from src.gate.hard_gates import evaluate_hard_gates, check_class_override
-from src.gate.risk_calculator import calculate_d_impact, calculate_risk_score
+from src.gate.risk_calculator import calculate_d_impact, calculate_risk_score, explain_risk_breakdown
 from src.gate.decision_engine import ExecutionTier, DecisionResult, evaluate_patch_tier
 
 __all__ = [
@@ -15,6 +15,7 @@ __all__ = [
     "check_class_override",
     "calculate_d_impact",
     "calculate_risk_score",
+    "explain_risk_breakdown",
     "ExecutionTier",
     "DecisionResult",
     "evaluate_patch_tier",

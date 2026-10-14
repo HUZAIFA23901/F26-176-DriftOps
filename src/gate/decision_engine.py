@@ -1,10 +1,10 @@
-"""Execution Tier Decision Engine for DriftOps.
+"""Execution Tier Decision Engine for DriftOps (UC-08 Evaluate Risk Gate).
 
-Synthesizes hard gate evaluations, class overrides, DAG blast radius, and
-structural risk scores to classify candidate repairs into actionable execution tiers:
-- Tier 1: Autonomous auto-fix
-- Tier 2: Bounded PR assist / human review
-- Tier 3: Hard block / manual fallback
+Synthesizes hard gate evaluations, class overrides, DAG blast radius (D_impact),
+and composite structural risk scores (R) to classify candidate repairs into actionable execution tiers:
+- Tier 1: Autonomous auto-fix (R < 0.20)
+- Tier 2: Bounded PR assist / human review (0.20 <= R < 0.60 or mandatory class override)
+- Tier 3: Hard block / manual fallback (R >= 0.60 or failed hard gates)
 
 Project ID: F26-176-DriftOps
 Module: src/gate/decision_engine.py

@@ -189,7 +189,7 @@ For in-depth architecture details and local testing instructions, refer to the [
 | :--- | :--- | :--- |
 | **Huzaifa** | Core Pipeline Orchestrator, Decision Engine, Risk Gates | [@HUZAIFA23901](https://github.com/HUZAIFA23901) |
 | **Zeeshan Sajid** | AST Parser, SQLGlot Transforms, End-to-End CLI | [@zeeshansajid361](https://github.com/zeeshansajid361) |
-| **Adnan** | CI/CD Automation Pipeline, Multi-Version Testing Matrix & Project Documentation | [adnanfreelancer75500@gmail.com](mailto:adnanfreelancer75500@gmail.com) |
+| **Adnan** | UC-08 Evaluate Risk Gate ($C_{\text{AST}}$, $D_{\text{impact}}$, $R$), Execution Tiers & CI/CD Pipeline | [adnanfreelancer75500@gmail.com](mailto:adnanfreelancer75500@gmail.com) |
 
 Detailed contributor breakdown and milestone records are maintained in [CONTRIBUTORS.md](CONTRIBUTORS.md).
 

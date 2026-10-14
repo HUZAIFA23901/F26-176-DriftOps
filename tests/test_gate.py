@@ -233,3 +233,97 @@ def test_evaluate_patch_tier_tier_3_by_high_risk():
     assert res.tier == ExecutionTier.TIER_3_FALLBACK
     assert res.hard_gates_passed is True
     assert res.risk_score >= 0.60
+
+
+# ==============================================================================
+# 5. UC-08 Evaluate Risk Gate: Formulas, Overrides, & Tier Assignment
+# ==============================================================================
+
+def test_uc08_evaluate_risk_gate_mathematical_formulas():
+    """UC-08: Verify mathematical formulas for D_impact, R, and breakdown telemetry."""
+    from src.gate.risk_calculator import explain_risk_breakdown
+
+    # Test D_impact saturation at 5 models:
+    assert calculate_d_impact(0) == 0.0
+    assert calculate_d_impact(1) == 0.20
+    assert calculate_d_impact(3) == 0.60
+    assert calculate_d_impact(5) == 1.00
+    assert calculate_d_impact(12) == 1.00
+
+    # Test R = 0.5 * D_impact + 0.5 * (1.0 - C_AST):
+    # Case 1: D_impact = 0.20 (1 model), C_AST = 0.90 -> R = 0.5*0.20 + 0.5*0.10 = 0.15
+    r1 = calculate_risk_score(d_impact=0.20, c_ast=0.90)
+    assert r1 == 0.15
+
+    # Case 2: D_impact = 0.60 (3 models), C_AST = 0.85 -> R = 0.5*0.60 + 0.5*0.15 = 0.375
+    r2 = calculate_risk_score(d_impact=0.60, c_ast=0.85)
+    assert r2 == 0.375
+
+    # Test audit breakdown structure
+    breakdown = explain_risk_breakdown(d_impact=0.20, c_ast=0.90)
+    assert breakdown["use_case"] == "UC-08: Evaluate Risk Gate"
+    assert breakdown["d_impact"] == 0.20
+    assert breakdown["structural_uncertainty"] == 0.10
+    assert breakdown["risk_score"] == 0.15
+    assert "formula" in breakdown
+
+
+def test_uc08_class_overrides_mandatory_tier2():
+    """UC-08: Verify mandatory class overrides route strictly to TIER_2_ASSIST."""
+    override_classes = [
+        "column_add",
+        "add_column",
+        "column_drop",
+        "drop_column",
+        "nullability_shift",
+        "type_narrowing",
+        "narrowing_cast",
+    ]
+    for failure_class in override_classes:
+        res = evaluate_patch_tier(
+            f_tests=0.0,
+            c_ast=0.99,
+            ast_rule_valid=True,
+            n_downstream=0,
+            failure_class=failure_class,
+        )
+        assert res.tier == ExecutionTier.TIER_2_ASSIST
+        assert res.class_override is True
+        assert res.hard_gates_passed is True
+
+
+def test_uc08_execution_tier_assignment_boundaries():
+    """UC-08: Verify exact boundary threshold conditions for execution tier routing."""
+    # Boundary 1: R < 0.20 -> Tier 1 (Auto-Fix)
+    res_tier1 = evaluate_patch_tier(
+        f_tests=0.0,
+        c_ast=0.92,
+        ast_rule_valid=True,
+        n_downstream=1,  # D_impact = 0.20, 1-C_AST = 0.08 -> R = 0.14 < 0.20
+        failure_class="column_rename",
+    )
+    assert res_tier1.tier == ExecutionTier.TIER_1_AUTO_FIX
+    assert res_tier1.risk_score < 0.20
+
+    # Boundary 2: 0.20 <= R < 0.60 -> Tier 2 (Assist)
+    res_tier2 = evaluate_patch_tier(
+        f_tests=0.0,
+        c_ast=0.85,
+        ast_rule_valid=True,
+        n_downstream=2,  # D_impact = 0.40, 1-C_AST = 0.15 -> R = 0.275
+        failure_class="column_rename",
+    )
+    assert res_tier2.tier == ExecutionTier.TIER_2_ASSIST
+    assert 0.20 <= res_tier2.risk_score < 0.60
+
+    # Boundary 3: R >= 0.60 -> Tier 3 (Fallback)
+    res_tier3 = evaluate_patch_tier(
+        f_tests=0.0,
+        c_ast=0.80,
+        ast_rule_valid=True,
+        n_downstream=5,  # D_impact = 1.0, 1-C_AST = 0.20 -> R = 0.60 >= 0.60
+        failure_class="column_rename",
+    )
+    assert res_tier3.tier == ExecutionTier.TIER_3_FALLBACK
+    assert res_tier3.risk_score >= 0.60
+
