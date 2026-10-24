@@ -7,7 +7,13 @@ Responsible for:
 - Calculating C_AST confidence scores and validating AST safety rules
 """
 
-from src.compiler.ast_parser import extract_columns, is_narrowing_type_cast, repair_column_rename, repair_type_shift
+from src.compiler.ast_parser import (
+    extract_columns,
+    is_narrowing_type_cast,
+    repair_column_drop_or_add,
+    repair_column_rename,
+    repair_type_shift,
+)
 from src.compiler.cast_calculator import (
     calculate_name_similarity,
     calculate_type_compatibility,
@@ -20,6 +26,7 @@ __all__ = [
     "extract_columns",
     "repair_column_rename",
     "repair_type_shift",
+    "repair_column_drop_or_add",
     "is_narrowing_type_cast",
     "calculate_name_similarity",
     "calculate_type_compatibility",

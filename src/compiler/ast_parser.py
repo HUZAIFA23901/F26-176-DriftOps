@@ -5,7 +5,7 @@ Module: src/compiler/ast_parser.py
 """
 
 import re
-from typing import List, Tuple
+from typing import Any, List, Optional, Tuple
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError
@@ -284,4 +284,115 @@ def repair_type_shift(
                 expr.replace(alias_expr)
 
     return ast.sql(dialect=dialect), is_narrowing
+
+
+def repair_column_drop_or_add(
+    sql: str,
+    dropped_columns: Optional[List[str]] = None,
+    added_columns: Optional[List[str]] = None,
+    dialect: str = "postgres",
+    remove_dropped: bool = False,
+    **kwargs: Any,
+) -> Tuple[str, bool]:
+    """Repair Failure Class 3 (Column Additions & Drops) via AST transformation.
+
+    Analyzes SQL AST using sqlglot and:
+    1. Replaces dropped columns in SELECT projection expressions with `NULL AS column_name`
+       (or completely removes them if `remove_dropped=True`) to maintain downstream schema contracts.
+       Sets `requires_tier2_override = True` whenever dropped columns are specified.
+    2. Appends added columns to SELECT projection lists if detected upstream.
+
+    Args:
+        sql: Original SQL query string to repair.
+        dropped_columns: List of column names that were dropped upstream.
+        added_columns: List of new column names discovered upstream.
+        dialect: SQL dialect for AST parsing and generation (default: "postgres").
+        remove_dropped: If True, completely removes dropped columns from SELECT list
+                        instead of replacing them with NULL placeholders (default: False).
+        **kwargs: Optional fallback arguments (e.g. sql_query).
+
+    Returns:
+        Tuple[str, bool]: (patched_sql, requires_tier2_override) where:
+            - patched_sql: Repaired SQL query string.
+            - requires_tier2_override: True if schema drop occurred (forcing Tier 2 review),
+                                      False if only non-breaking additions or no-op.
+
+    Raises:
+        ParseError: If the SQL string contains invalid syntax.
+    """
+    raw_sql = kwargs.get("sql_query", sql)
+    requires_tier2_override = bool(dropped_columns)
+
+    if not raw_sql or not raw_sql.strip():
+        return raw_sql, requires_tier2_override
+
+    try:
+        ast = sqlglot.parse_one(raw_sql, read=dialect)
+    except ParseError:
+        raise
+    except Exception as exc:
+        raise ParseError(f"Failed to parse SQL expression: {exc}") from exc
+
+    dropped_set = {c.strip().lower() for c in (dropped_columns or []) if c.strip()}
+    added_list = [c.strip() for c in (added_columns or []) if c.strip()]
+
+    # 1. Process dropped columns in SELECT lists
+    if dropped_set:
+        for select in ast.find_all(exp.Select):
+            for expr in list(select.expressions):
+                col_name = None
+                alias_name = None
+
+                if isinstance(expr, exp.Column):
+                    col_name = expr.name.lower()
+                    alias_name = expr.name
+                elif isinstance(expr, exp.Alias):
+                    alias_name = expr.alias
+                    if isinstance(expr.this, exp.Column):
+                        col_name = expr.this.name.lower()
+                    elif isinstance(expr.this, exp.Cast) and isinstance(expr.this.this, exp.Column):
+                        col_name = expr.this.this.name.lower()
+                elif isinstance(expr, exp.Cast) and isinstance(expr.this, exp.Column):
+                    col_name = expr.this.name.lower()
+                    alias_name = expr.this.name
+
+                if col_name and col_name in dropped_set:
+                    if remove_dropped:
+                        expr.pop()
+                    else:
+                        null_expr = exp.alias_(exp.null(), alias_name)
+                        expr.replace(null_expr)
+
+    # 2. Process added columns into SELECT lists
+    if added_list:
+        for select in ast.find_all(exp.Select):
+            # Avoid appending into subqueries inside WHERE, IN, or EXISTS clauses
+            curr = select.parent
+            in_predicate = False
+            while curr:
+                if isinstance(curr, (exp.Where, exp.In, exp.Exists)):
+                    in_predicate = True
+                    break
+                curr = curr.parent
+            if in_predicate:
+                continue
+
+            existing_names = set()
+            for expr in select.expressions:
+                if isinstance(expr, exp.Column):
+                    existing_names.add(expr.name.lower())
+                elif isinstance(expr, exp.Alias):
+                    existing_names.add(expr.alias.lower())
+                    if hasattr(expr.this, "name") and expr.this.name:
+                        existing_names.add(expr.this.name.lower())
+                elif hasattr(expr, "alias_or_name") and expr.alias_or_name:
+                    existing_names.add(expr.alias_or_name.lower())
+
+            for col in added_list:
+                if col.lower() not in existing_names:
+                    select.select(exp.column(col), copy=False)
+                    existing_names.add(col.lower())
+
+    return ast.sql(dialect=dialect), requires_tier2_override
+
 
