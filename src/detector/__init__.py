@@ -2,6 +2,21 @@
 
 Responsible for:
 - Detecting column renames, deletions, type mutations, and upstream relation drift
-- Diagnostic classification of dbt compile/run errors
-- Candidate patch generation using Jaro-Winkler fuzzy matching and dialect transforms
+- Pre-flight schema metadata snapshot and diff classification
 """
+
+from src.detector.preflight import (
+    ColumnSchema,
+    DriftEvent,
+    TableSchema,
+    detect_schema_drift,
+    fetch_live_pg_schema,
+)
+
+__all__ = [
+    "ColumnSchema",
+    "TableSchema",
+    "DriftEvent",
+    "fetch_live_pg_schema",
+    "detect_schema_drift",
+]
