@@ -15,8 +15,12 @@ MANDATORY_OVERRIDE_CLASSES = {
     "add_column",
     "column_drop",
     "drop_column",
+    "column_drop_add",
+    "class3_column_drop_add",
+    "nullability",
     "nullability_shift",
     "nullability_change",
+    "class4_nullability",
     "type_narrowing",
     "narrowing_cast",
 }

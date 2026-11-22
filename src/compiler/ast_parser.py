@@ -538,21 +538,29 @@ def repair_model_identifier_rename(
     old_target = old_model_name.strip()
     new_target = new_model_name.strip()
     old_target_lower = old_target.lower()
+    old_table_simple = old_target.split(".")[-1].lower()
+    new_table_simple = new_target.split(".")[-1]
 
     # Pre-process dbt jinja macro patterns if present: {{ ref('old_model') }} or {{ ref("old_model") }}
-    escaped_old = re.escape(old_target)
-    jinja_pattern = re.compile(
-        r"(\{\{\s*ref\s*\(\s*['\"])(" + escaped_old + r")(['\"]\s*\)\s*\}\})",
-        re.IGNORECASE,
-    )
-    patched_jinja_sql = jinja_pattern.sub(r"\g<1>" + new_target + r"\g<3>", raw_sql)
+    patched_jinja_sql = raw_sql
+    targets_to_replace = [(old_target, new_target)]
+    if old_table_simple != old_target_lower:
+        targets_to_replace.append((old_table_simple, new_table_simple))
 
-    # Also handle standalone ref('old_model') in non-bracketed macro context
-    macro_ref_pattern = re.compile(
-        r"(\bref\s*\(\s*['\"])(" + escaped_old + r")(['\"]\s*\))",
-        re.IGNORECASE,
-    )
-    patched_jinja_sql = macro_ref_pattern.sub(r"\g<1>" + new_target + r"\g<3>", patched_jinja_sql)
+    for target_name, replacement in targets_to_replace:
+        escaped_old = re.escape(target_name)
+        jinja_pattern = re.compile(
+            r"(\{\{\s*ref\s*\(\s*['\"])(" + escaped_old + r")(['\"]\s*\)\s*\}\})",
+            re.IGNORECASE,
+        )
+        patched_jinja_sql = jinja_pattern.sub(r"\g<1>" + replacement + r"\g<3>", patched_jinja_sql)
+
+        # Also handle standalone ref('old_model') in non-bracketed macro context
+        macro_ref_pattern = re.compile(
+            r"(\bref\s*\(\s*['\"])(" + escaped_old + r")(['\"]\s*\))",
+            re.IGNORECASE,
+        )
+        patched_jinja_sql = macro_ref_pattern.sub(r"\g<1>" + replacement + r"\g<3>", patched_jinja_sql)
 
     try:
         ast = sqlglot.parse_one(patched_jinja_sql, read=dialect)
@@ -568,21 +576,32 @@ def repair_model_identifier_rename(
     # 1. Update exp.Table references in FROM and JOIN clauses
     for table in ast.find_all(exp.Table):
         # Case A: Standard table identifier: FROM old_model or JOIN raw.old_model
-        if table.name.lower() == old_target_lower:
-            table.set("this", exp.to_identifier(new_target))
+        if (
+            table.name.lower() == old_target_lower
+            or table.name.lower() == old_table_simple
+            or table.sql().lower() == old_target_lower
+        ):
+            table.set("this", exp.to_identifier(new_table_simple))
+            if "." in new_target:
+                new_schema = new_target.split(".")[0]
+                table.set("db", exp.to_identifier(new_schema))
 
         # Case B: Table with func call: FROM ref('old_model')
         elif isinstance(table.this, (exp.Func, exp.Anonymous)) and table.this.name.lower() == "ref":
             for arg in table.this.expressions:
-                if isinstance(arg, exp.Literal) and str(arg.this).lower() == old_target_lower:
-                    arg.set("this", new_target)
-                elif isinstance(arg, exp.Var) and arg.name.lower() == old_target_lower:
-                    arg.set("this", new_target)
+                if isinstance(arg, exp.Literal) and str(arg.this).lower() in (old_target_lower, old_table_simple):
+                    arg.set("this", new_table_simple)
+                elif isinstance(arg, exp.Var) and arg.name.lower() in (old_target_lower, old_table_simple):
+                    arg.set("this", new_table_simple)
 
     # 2. Also check any standalone ref('old_model') function expressions in AST
     for func in ast.find_all(exp.Anonymous, exp.Func):
         if func.name.lower() == "ref":
             for arg in func.expressions:
+                if isinstance(arg, exp.Literal) and str(arg.this).lower() in (old_target_lower, old_table_simple):
+                    arg.set("this", new_table_simple)
+                elif isinstance(arg, exp.Var) and arg.name.lower() in (old_target_lower, old_table_simple):
+                    arg.set("this", new_table_simple)
                 if isinstance(arg, exp.Literal) and str(arg.this).lower() == old_target_lower:
                     arg.set("this", new_target)
                 elif isinstance(arg, exp.Var) and arg.name.lower() == old_target_lower:

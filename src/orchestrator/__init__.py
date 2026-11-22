@@ -6,8 +6,12 @@ Responsible for:
 - GitHub integration (check runs, commit statuses, inline PR review suggestions)
 """
 
-from src.orchestrator.runner import run_drift_repair_pipeline
+from src.orchestrator.runner import (
+    run_drift_repair_pipeline,
+    run_preflight_pipeline,
+)
 
 __all__ = [
     "run_drift_repair_pipeline",
+    "run_preflight_pipeline",
 ]

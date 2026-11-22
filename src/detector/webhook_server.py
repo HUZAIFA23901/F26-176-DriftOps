@@ -185,6 +185,7 @@ def default_pipeline_dispatcher(
 
     old_col = extracted_payload.get("old_col", "")
     new_col = extracted_payload.get("new_col", "")
+    mock_sandbox = payload.metadata.get("mock_sandbox_result") if payload.metadata else None
 
     try:
         pipeline_result = run_drift_repair_pipeline(
@@ -194,6 +195,8 @@ def default_pipeline_dispatcher(
             model_name=payload.model_name,
             n_downstream=payload.downstream_count,
             failure_class=detected_class,
+            payload=extracted_payload,
+            mock_sandbox_result=mock_sandbox,
         )
         return {
             "tier": pipeline_result.get("tier", "TIER_3_FALLBACK"),
@@ -201,6 +204,7 @@ def default_pipeline_dispatcher(
             "hard_gates_passed": pipeline_result.get("hard_gates_passed", False),
             "reasons": pipeline_result.get("reasons", []),
             "patched_sql": pipeline_result.get("patched_sql", ""),
+            "c_ast": pipeline_result.get("c_ast", 0.0),
         }
     except Exception as exc:
         return {
@@ -209,6 +213,7 @@ def default_pipeline_dispatcher(
             "hard_gates_passed": False,
             "reasons": [f"Pipeline execution error: {exc}"],
             "patched_sql": "",
+            "c_ast": 0.0,
         }
 
 
