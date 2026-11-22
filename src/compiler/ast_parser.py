@@ -396,3 +396,204 @@ def repair_column_drop_or_add(
     return ast.sql(dialect=dialect), requires_tier2_override
 
 
+def repair_nullability_shift(
+    sql: str,
+    column_name: str,
+    default_value: str = "''",
+    dialect: str = "postgres",
+    **kwargs: Any,
+) -> Tuple[str, bool]:
+    """Repair Failure Class 4 (Nullability Shifts) via AST transformation.
+
+    Analyzes SQL AST using sqlglot and wraps drifted non-nullable column projections
+    in `COALESCE(column_name, <default_value>) AS column_name` (or preserves custom aliases)
+    to prevent NULL constraint violations downstream.
+
+    Args:
+        sql: Original SQL query to repair.
+        column_name: Name of column with nullability shift.
+        default_value: SQL literal default value to substitute for NULLs (default: "''").
+        dialect: SQL dialect for AST parsing and generation (default: "postgres").
+        **kwargs: Optional fallback arguments (e.g. sql_query).
+
+    Returns:
+        Tuple[str, bool]: (patched_sql, requires_tier2_override) where:
+            - patched_sql: Repaired SQL string containing injected COALESCE.
+            - requires_tier2_override: Always True (handling nullability constraints requires human review).
+
+    Raises:
+        ParseError: If the SQL string contains invalid syntax.
+    """
+    raw_sql = kwargs.get("sql_query", sql)
+    if not raw_sql or not raw_sql.strip():
+        return raw_sql, True
+
+    try:
+        ast = sqlglot.parse_one(raw_sql, read=dialect)
+    except ParseError:
+        raise
+    except Exception as exc:
+        raise ParseError(f"Failed to parse SQL expression: {exc}") from exc
+
+    target_col = column_name.strip().lower()
+
+    # Parse default value expression
+    clean_default = default_value.strip()
+    try:
+        default_expr = sqlglot.parse_one(clean_default, read=dialect)
+        if default_expr is None:
+            default_expr = exp.Literal.string(clean_default)
+    except Exception:
+        default_expr = exp.Literal.string(clean_default)
+
+    for select in ast.find_all(exp.Select):
+        for expr in list(select.expressions):
+            # Case 1: Direct column projection (e.g., SELECT column_name)
+            if isinstance(expr, exp.Column) and expr.name.lower() == target_col:
+                col_ref = exp.column(expr.name, table=expr.table) if expr.table else exp.column(expr.name)
+                coalesce_expr = exp.func("COALESCE", col_ref, default_expr)
+                alias_expr = exp.alias_(coalesce_expr, expr.name)
+                expr.replace(alias_expr)
+
+            # Case 2: Column with custom alias (e.g., SELECT column_name AS custom_alias)
+            elif (
+                isinstance(expr, exp.Alias)
+                and isinstance(expr.this, exp.Column)
+                and expr.this.name.lower() == target_col
+            ):
+                col = expr.this
+                col_ref = exp.column(col.name, table=col.table) if col.table else exp.column(col.name)
+                coalesce_expr = exp.func("COALESCE", col_ref, default_expr)
+                expr.set("this", coalesce_expr)
+
+            # Case 3: Column already in COALESCE with custom alias
+            elif (
+                isinstance(expr, exp.Alias)
+                and isinstance(expr.this, (exp.Func, exp.Anonymous))
+                and expr.this.name.lower() == "coalesce"
+                and any(
+                    isinstance(arg, exp.Column) and arg.name.lower() == target_col
+                    for arg in expr.this.expressions
+                )
+            ):
+                if len(expr.this.expressions) > 1:
+                    expr.this.expressions[1] = default_expr
+                else:
+                    expr.this.expressions.append(default_expr)
+
+            # Case 4: Column already in CAST with custom alias (e.g. SELECT CAST(col AS ...) AS alias)
+            elif (
+                isinstance(expr, exp.Alias)
+                and isinstance(expr.this, exp.Cast)
+                and isinstance(expr.this.this, exp.Column)
+                and expr.this.this.name.lower() == target_col
+            ):
+                coalesce_expr = exp.func("COALESCE", expr.this.copy(), default_expr)
+                expr.set("this", coalesce_expr)
+
+            # Case 5: Column already in CAST without alias (e.g. SELECT CAST(col AS ...))
+            elif (
+                isinstance(expr, exp.Cast)
+                and isinstance(expr.this, exp.Column)
+                and expr.this.name.lower() == target_col
+            ):
+                coalesce_expr = exp.func("COALESCE", expr.copy(), default_expr)
+                alias_expr = exp.alias_(coalesce_expr, expr.this.name)
+                expr.replace(alias_expr)
+
+    return ast.sql(dialect=dialect), True
+
+
+def repair_model_identifier_rename(
+    sql: str,
+    old_model_name: str,
+    new_model_name: str,
+    dialect: str = "postgres",
+    **kwargs: Any,
+) -> Tuple[str, bool]:
+    """Repair Failure Class 5 (Model/Table Identifier Drift) via AST transformation.
+
+    Rewrites table/view references in FROM and JOIN clauses as well as `ref('old_model')`
+    dbt macro calls to point to `new_model_name`.
+
+    Args:
+        sql: Original SQL query to repair.
+        old_model_name: Name of drifted model or table identifier.
+        new_model_name: Replacement model or table identifier.
+        dialect: SQL dialect for AST parsing and generation (default: "postgres").
+        **kwargs: Optional fallback arguments (e.g. sql_query).
+
+    Returns:
+        Tuple[str, bool]: (patched_sql, requires_tier2_override) where:
+            - patched_sql: Repaired SQL query string with updated model identifiers.
+            - requires_tier2_override: False (safe identifier mapping).
+
+    Raises:
+        ParseError: If the SQL string contains invalid syntax.
+    """
+    raw_sql = kwargs.get("sql_query", sql)
+    if not raw_sql or not raw_sql.strip():
+        return raw_sql, False
+
+    old_target = old_model_name.strip()
+    new_target = new_model_name.strip()
+    old_target_lower = old_target.lower()
+
+    # Pre-process dbt jinja macro patterns if present: {{ ref('old_model') }} or {{ ref("old_model") }}
+    escaped_old = re.escape(old_target)
+    jinja_pattern = re.compile(
+        r"(\{\{\s*ref\s*\(\s*['\"])(" + escaped_old + r")(['\"]\s*\)\s*\}\})",
+        re.IGNORECASE,
+    )
+    patched_jinja_sql = jinja_pattern.sub(r"\g<1>" + new_target + r"\g<3>", raw_sql)
+
+    # Also handle standalone ref('old_model') in non-bracketed macro context
+    macro_ref_pattern = re.compile(
+        r"(\bref\s*\(\s*['\"])(" + escaped_old + r")(['\"]\s*\))",
+        re.IGNORECASE,
+    )
+    patched_jinja_sql = macro_ref_pattern.sub(r"\g<1>" + new_target + r"\g<3>", patched_jinja_sql)
+
+    try:
+        ast = sqlglot.parse_one(patched_jinja_sql, read=dialect)
+    except ParseError:
+        if "{{" in patched_jinja_sql:
+            return patched_jinja_sql, False
+        raise
+    except Exception as exc:
+        if "{{" in patched_jinja_sql:
+            return patched_jinja_sql, False
+        raise ParseError(f"Failed to parse SQL expression: {exc}") from exc
+
+    # 1. Update exp.Table references in FROM and JOIN clauses
+    for table in ast.find_all(exp.Table):
+        # Case A: Standard table identifier: FROM old_model or JOIN raw.old_model
+        if table.name.lower() == old_target_lower:
+            table.set("this", exp.to_identifier(new_target))
+
+        # Case B: Table with func call: FROM ref('old_model')
+        elif isinstance(table.this, (exp.Func, exp.Anonymous)) and table.this.name.lower() == "ref":
+            for arg in table.this.expressions:
+                if isinstance(arg, exp.Literal) and str(arg.this).lower() == old_target_lower:
+                    arg.set("this", new_target)
+                elif isinstance(arg, exp.Var) and arg.name.lower() == old_target_lower:
+                    arg.set("this", new_target)
+
+    # 2. Also check any standalone ref('old_model') function expressions in AST
+    for func in ast.find_all(exp.Anonymous, exp.Func):
+        if func.name.lower() == "ref":
+            for arg in func.expressions:
+                if isinstance(arg, exp.Literal) and str(arg.this).lower() == old_target_lower:
+                    arg.set("this", new_target)
+                elif isinstance(arg, exp.Var) and arg.name.lower() == old_target_lower:
+                    arg.set("this", new_target)
+
+    # 3. Update column table qualifiers if table had no explicit alias (e.g. old_model.id)
+    for col in ast.find_all(exp.Column):
+        if col.table and col.table.lower() == old_target_lower:
+            col.set("table", exp.to_identifier(new_target))
+
+    return ast.sql(dialect=dialect), False
+
+
+

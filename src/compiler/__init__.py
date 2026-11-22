@@ -12,6 +12,8 @@ from src.compiler.ast_parser import (
     is_narrowing_type_cast,
     repair_column_drop_or_add,
     repair_column_rename,
+    repair_model_identifier_rename,
+    repair_nullability_shift,
     repair_type_shift,
 )
 from src.compiler.cast_calculator import (
@@ -21,12 +23,16 @@ from src.compiler.cast_calculator import (
     compute_c_ast,
 )
 from src.compiler.rules import validate_ast_rules
+from src.compiler.synthesizer import synthesize_repair_patch
 
 __all__ = [
     "extract_columns",
     "repair_column_rename",
     "repair_type_shift",
     "repair_column_drop_or_add",
+    "repair_nullability_shift",
+    "repair_model_identifier_rename",
+    "synthesize_repair_patch",
     "is_narrowing_type_cast",
     "calculate_name_similarity",
     "calculate_type_compatibility",
