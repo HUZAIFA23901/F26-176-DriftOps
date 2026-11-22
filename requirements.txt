@@ -11,6 +11,7 @@ dbt-postgres>=1.7.0
 # Fast API Backend & ASGI Server
 fastapi>=0.109.0
 uvicorn>=0.27.0
+httpx>=0.25.0
 
 # Ephemeral Docker Sandbox Runner
 docker>=7.0.0
