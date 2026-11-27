@@ -58,12 +58,14 @@ def synthesize_repair_patch(
     if norm_class in ("class1_rename", "column_rename", "class_1", "class1", "rename"):
         old_col = (
             payload.get("old_column")
+            or payload.get("old_col")
             or payload.get("old_column_name")
             or payload.get("old_name")
             or ""
         )
         new_col = (
             payload.get("new_column")
+            or payload.get("new_col")
             or payload.get("new_column_name")
             or payload.get("new_name")
             or ""

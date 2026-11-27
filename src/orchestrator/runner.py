@@ -93,6 +93,8 @@ def run_drift_repair_pipeline(
         return {
             "broken_sql": broken_sql,
             "patched_sql": broken_sql,
+            "failure_class": failure_class,
+            "payload": payload or {},
             "old_column": old_column or "",
             "new_column": new_column or "",
             "c_ast": 0.0,
@@ -121,12 +123,22 @@ def run_drift_repair_pipeline(
     # --------------------------------------------------------------------------
     effective_payload = dict(payload) if payload else {}
 
-    if old_column and "old_column" not in effective_payload and "old_col" not in effective_payload:
-        effective_payload["old_column"] = old_column
-        effective_payload["old_col"] = old_column
-    if new_column and "new_column" not in effective_payload and "new_col" not in effective_payload:
-        effective_payload["new_column"] = new_column
-        effective_payload["new_col"] = new_column
+    if old_column:
+        effective_payload.setdefault("old_column", old_column)
+        effective_payload.setdefault("old_col", old_column)
+    elif "old_col" in effective_payload:
+        effective_payload.setdefault("old_column", effective_payload["old_col"])
+    elif "old_column" in effective_payload:
+        effective_payload.setdefault("old_col", effective_payload["old_column"])
+
+    if new_column:
+        effective_payload.setdefault("new_column", new_column)
+        effective_payload.setdefault("new_col", new_column)
+    elif "new_col" in effective_payload:
+        effective_payload.setdefault("new_column", effective_payload["new_col"])
+    elif "new_column" in effective_payload:
+        effective_payload.setdefault("new_col", effective_payload["new_column"])
+
     if "source_type" not in effective_payload:
         effective_payload["source_type"] = source_type
     if "target_type" not in effective_payload:
@@ -317,6 +329,8 @@ def run_drift_repair_pipeline(
     return {
         "broken_sql": broken_sql,
         "patched_sql": patched_sql,
+        "failure_class": failure_class,
+        "payload": effective_payload,
         "old_column": old_col_val,
         "new_column": new_col_val,
         "c_ast": c_ast,
